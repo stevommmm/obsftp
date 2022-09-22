@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
-	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -33,34 +34,19 @@ func (o obc) For(name string) *obc {
 	return nil
 }
 
-func (o obc) list(prefix string, files *FileListAt) {
-	log.Printf("list> %s:%s\n", o.name, prefix)
-	for obs := range o.client.ListObjects(
-		context.Background(),
-		o.name,
-		minio.ListObjectsOptions{Prefix: prefix},
-	) {
-		mode := fs.ModePerm
-		if obs.ETag == "" {
-			mode = mode | fs.ModeDir
-		}
-		*files = append(*files, FileStatFromObjectInfo(&obs))
-	}
-}
+type FileListAt []os.FileInfo
 
-func (o obc) stat(name string, files *FileListAt) {
-	log.Printf("stat> %q:%q\n", o.name, name)
-	obs, err := o.client.StatObject(
-		context.Background(),
-		o.name,
-		name,
-		minio.StatObjectOptions{},
-	)
-	if err == nil {
-		*files = append(*files, FileStatFromObjectInfo(&obs))
-	} else {
-		*files = append(*files, FileStatForDir(name))
+// copied from sftp in-memory handlers
+func (f FileListAt) ListAt(ls []os.FileInfo, offset int64) (int, error) {
+	var n int
+	if offset >= int64(len(f)) {
+		return 0, io.EOF
 	}
+	n = copy(ls, f[offset:])
+	if n < len(ls) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
@@ -70,12 +56,35 @@ func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 	log.Printf("\nFilelist %q: %q %q\n", c.name, req.Method, path)
 	switch req.Method {
 	case "Stat":
-		c.stat(path, &files)
+		obs, err := c.client.StatObject(
+			context.Background(),
+			c.name,
+			path,
+			minio.StatObjectOptions{},
+		)
+		if err == nil {
+			files = append(files, FileStatFromObjectInfo(&obs))
+		} else {
+			files = append(files, FileStatForDir(path))
+		}
 	case "List":
-		c.list(path+"/", &files)
+		for obs := range c.client.ListObjects(
+			context.Background(),
+			c.name,
+			minio.ListObjectsOptions{Prefix: path + "/"},
+		) {
+			files = append(files, FileStatFromObjectInfo(&obs))
+		}
 	}
-	log.Printf("<list %#v\n", files)
 	return files, nil
+}
+
+// Functions to send back nice names for owners
+func (c obc) LookupUserName(_ string) string {
+	return c.name
+}
+func (c obc) LookupGroupName(_ string) string {
+	return c.name
 }
 
 func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
@@ -95,8 +104,30 @@ func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 }
 
 func (o obc) Filewrite(req *sftp.Request) (io.WriterAt, error) {
+	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
 	log.Printf("Filewrite: %#v\n", req)
-	return nil, nil
+	return FileWriteAt{o, path}, nil
+}
+
+type FileWriteAt struct {
+	o    obc
+	path string
+}
+
+func (fwa FileWriteAt) WriteAt(p []byte, off int64) (int, error) {
+	b := bytes.Buffer{}
+	if off > 0 {
+		return 0, fmt.Errorf("Offset writes not supported")
+	}
+	_, err := b.Write(p)
+	if err != nil {
+		return 0, err
+	}
+	i, err := fwa.o.client.PutObject(context.Background(), fwa.o.name, fwa.path, &b, int64(b.Len()), minio.PutObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return int(i.Size), nil
 }
 
 func (o obc) Filecmd(req *sftp.Request) error {

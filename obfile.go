@@ -19,16 +19,21 @@ type obf struct {
 }
 
 func FileStatFromObjectInfo(stat *minio.ObjectInfo) obf {
-	mode := fs.ModePerm
+	mode := fs.FileMode(0750)
 	if stat.ETag == "" {
 		mode = mode | fs.ModeDir
+	}
+	// Folders dont really have a time, so they show as negative
+	mod := stat.LastModified
+	if stat.LastModified.Unix() <= 0 {
+		mod = time.Now()
 	}
 	// Forge 'folders' by trimming out the search prefix
 	return obf{
 		name:    filepath.Base(stat.Key),
 		size:    stat.Size,
 		mode:    mode,
-		modTime: stat.LastModified,
+		modTime: mod,
 		isDir:   stat.ETag == "",
 	}
 }
@@ -37,7 +42,7 @@ func FileStatForDir(path string) obf {
 	return obf{
 		name:    path,
 		size:    0,
-		mode:    fs.ModePerm | fs.ModeDir,
+		mode:    fs.FileMode(0750) | fs.ModeDir,
 		modTime: time.Now(),
 		isDir:   true,
 	}
