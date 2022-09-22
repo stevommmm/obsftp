@@ -3,10 +3,11 @@ package main
 import (
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/minio/minio-go/v6"
+	"github.com/minio/minio-go/v7"
 )
 
 type obf struct {
@@ -17,17 +18,28 @@ type obf struct {
 	isDir   bool
 }
 
-func FileStatFromObjectInfo(stat *minio.ObjectInfo) *obf {
+func FileStatFromObjectInfo(stat *minio.ObjectInfo) obf {
 	mode := fs.ModePerm
 	if stat.ETag == "" {
 		mode = mode | fs.ModeDir
 	}
-	return &obf{
-		name:    stat.Key,
+	// Forge 'folders' by trimming out the search prefix
+	return obf{
+		name:    filepath.Base(stat.Key),
 		size:    stat.Size,
 		mode:    mode,
 		modTime: stat.LastModified,
 		isDir:   stat.ETag == "",
+	}
+}
+
+func FileStatForDir(path string) obf {
+	return obf{
+		name:    path,
+		size:    0,
+		mode:    fs.ModePerm | fs.ModeDir,
+		modTime: time.Now(),
+		isDir:   true,
 	}
 }
 

@@ -7,8 +7,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 
-	"github.com/minio/minio-go/v6"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -88,15 +90,21 @@ func clientHandler(nConn net.Conn) {
 }
 
 func main() {
+	cliVerbose := flag.Bool("v", false, "Verbose mode.")
 	flag.Parse()
 
-	endpoint := "10.88.0.8:9000"
+	endpoint := "10.88.0.2:9000"
 	accessKeyID := "minioadmin"
 	secretAccessKey := "minioadmin"
-	useSSL := false
 
 	// Initialize minio client object.
-	if c, err := minio.New(endpoint, accessKeyID, secretAccessKey, useSSL); err == nil {
+	if c, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
+		Secure: false,
+	}); err == nil {
+		if *cliVerbose {
+			c.TraceOn(os.Stderr)
+		}
 		client = &obc{
 			client: c,
 		}

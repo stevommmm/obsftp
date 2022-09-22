@@ -1,13 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"io/fs"
 	"log"
-	"os"
-	// "strings"
+	"path/filepath"
+	"strings"
 
-	"github.com/minio/minio-go/v6"
+	"github.com/minio/minio-go/v7"
 	"github.com/pkg/sftp"
 )
 
@@ -17,8 +19,7 @@ type obc struct {
 }
 
 func (o obc) IsValidUser(name string) bool {
-	ok, err := o.client.BucketExists(name)
-	log.Println(ok, err)
+	ok, err := o.client.BucketExists(context.Background(), name)
 	if ok && err == nil {
 		return true
 	}
@@ -32,62 +33,65 @@ func (o obc) For(name string) *obc {
 	return nil
 }
 
-type listerat []os.FileInfo
+func (o obc) list(prefix string, files *FileListAt) {
+	log.Printf("list> %s:%s\n", o.name, prefix)
+	for obs := range o.client.ListObjects(
+		context.Background(),
+		o.name,
+		minio.ListObjectsOptions{Prefix: prefix},
+	) {
+		mode := fs.ModePerm
+		if obs.ETag == "" {
+			mode = mode | fs.ModeDir
+		}
+		*files = append(*files, FileStatFromObjectInfo(&obs))
+	}
+}
 
-// Modeled after strings.Reader's ReadAt() implementation
-func (f listerat) ListAt(ls []os.FileInfo, offset int64) (int, error) {
-	var n int
-	if offset >= int64(len(f)) {
-		return 0, io.EOF
+func (o obc) stat(name string, files *FileListAt) {
+	log.Printf("stat> %q:%q\n", o.name, name)
+	obs, err := o.client.StatObject(
+		context.Background(),
+		o.name,
+		name,
+		minio.StatObjectOptions{},
+	)
+	if err == nil {
+		*files = append(*files, FileStatFromObjectInfo(&obs))
+	} else {
+		*files = append(*files, FileStatForDir(name))
 	}
-	n = copy(ls, f[offset:])
-	if n < len(ls) {
-		return n, io.EOF
-	}
-	return n, nil
 }
 
 func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
-	files := listerat{}
-	log.Printf("Filelist %q: %#v\n", c.name, req)
+	files := FileListAt{}
+	// Remove leading / from everything
+	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
+	log.Printf("\nFilelist %q: %q %q\n", c.name, req.Method, path)
 	switch req.Method {
 	case "Stat":
-		stats, err := c.client.GetObjectACL(c.name, req.Filepath,)
-		log.Println("Stat", stats, err)
-		if err != nil {
-			return files, err
-		}
-		mode := fs.ModePerm
-		if stats.ETag == "" {
-			mode = mode | fs.ModeDir
-		}
-		files = append(files, FileStatFromObjectInfo(stats))
+		c.stat(path, &files)
 	case "List":
-		doneCh := make(chan struct{})
-		defer close(doneCh)
-		for obs := range c.client.ListObjectsV2(c.name, req.Filepath, false, doneCh) {
-			log.Printf("%#v\n", obs)
-			mode := fs.ModePerm
-			if obs.ETag == "" {
-				mode = mode | fs.ModeDir
-			}
-			files = append(files, FileStatFromObjectInfo(&obs))
-		}
+		c.list(path+"/", &files)
 	}
-	// 	fileList, err := client.ReadDir(req.Filepath)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	return listerat(fileList), nil
-	// case "Stat":
-	// case "Readlink":
-	// }
+	log.Printf("<list %#v\n", files)
 	return files, nil
 }
 
 func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
-	log.Printf("Fileread: %#v\n", req)
-	return nil, nil
+	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
+	log.Println("Fileread:", path, req)
+	obs, err := c.client.GetObject(
+		req.Context(),
+		c.name,
+		path,
+		minio.GetObjectOptions{},
+	)
+	b, err := io.ReadAll(obs)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(b), nil
 }
 
 func (o obc) Filewrite(req *sftp.Request) (io.WriterAt, error) {
