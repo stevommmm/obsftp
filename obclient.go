@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -67,6 +66,10 @@ func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 		} else {
 			files = append(files, FileStatForDir(path))
 		}
+		if len(files) == 0 {
+			log.Println("No files, returning error")
+			return files, os.ErrNotExist
+		}
 	case "List":
 		for obs := range c.client.ListObjects(
 			context.Background(),
@@ -96,6 +99,9 @@ func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 		path,
 		minio.GetObjectOptions{},
 	)
+	if err != nil {
+		return nil, os.ErrNotExist
+	}
 	b, err := io.ReadAll(obs)
 	if err != nil {
 		return nil, err
@@ -106,31 +112,63 @@ func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 func (o obc) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
 	log.Printf("Filewrite: %#v\n", req)
-	return FileWriteAt{o, path}, nil
+	return FileWriteAt{o, path, []byte{}}, nil
 }
 
 type FileWriteAt struct {
 	o    obc
 	path string
+	b    []byte
 }
 
 func (fwa FileWriteAt) WriteAt(p []byte, off int64) (int, error) {
-	b := bytes.Buffer{}
-	if off > 0 {
-		return 0, fmt.Errorf("Offset writes not supported")
+	grow := int64(len(p)) + off - int64(len(fwa.b))
+	if grow > 0 {
+		fwa.b = append(fwa.b, make([]byte, grow)...)
 	}
-	_, err := b.Write(p)
+
+	return copy(fwa.b[off:], p), nil
+}
+func (fwa FileWriteAt) Close() error {
+	_, err := fwa.o.client.PutObject(
+		context.Background(),
+		fwa.o.name,
+		fwa.path,
+		bytes.NewReader(fwa.b),
+		int64(len(fwa.b)),
+		minio.PutObjectOptions{},
+	)
 	if err != nil {
-		return 0, err
+		log.Println("PutObject", fwa.path, err)
+		return err
 	}
-	i, err := fwa.o.client.PutObject(context.Background(), fwa.o.name, fwa.path, &b, int64(b.Len()), minio.PutObjectOptions{})
-	if err != nil {
-		return 0, err
-	}
-	return int(i.Size), nil
+	return nil
 }
 
-func (o obc) Filecmd(req *sftp.Request) error {
-	log.Printf("Filecmd: %#v\n", req)
+func (c obc) Filecmd(req *sftp.Request) error {
+	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
+	log.Printf("Filecmd: %#v\n %#v\n", req, req.Attributes())
+	switch req.Method {
+	case "Mkdir":
+		return nil
+	case "Rename":
+	case "Rmdir":
+		lobs := c.client.ListObjects(
+			context.Background(),
+			c.name,
+			minio.ListObjectsOptions{Prefix: path + "/", Recursive: true},
+		)
+		for _ = range c.client.RemoveObjects(context.Background(), c.name, lobs, minio.RemoveObjectsOptions{}) {
+			return os.ErrInvalid
+		}
+		return nil
+	case "Setstat":
+		return os.ErrPermission
+	case "Link", "Symlink":
+		return os.ErrPermission
+	case "Remove":
+		return c.client.RemoveObject(context.Background(), c.name, path, minio.RemoveObjectOptions{})
+	}
+
 	return nil
 }

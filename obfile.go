@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -75,5 +76,8 @@ func (o obf) IsDir() bool {
 
 // underlying data source (can return nil)
 func (o obf) Sys() any {
-	return nil
+	return &syscall.Stat_t{
+		Uid: 65534,
+		Gid: 65534,
+	}
 }
