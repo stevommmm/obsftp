@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log"
@@ -55,16 +54,15 @@ func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 	log.Printf("\nFilelist %q: %q %q\n", c.name, req.Method, path)
 	switch req.Method {
 	case "Stat":
-		obs, err := c.client.StatObject(
-			context.Background(),
-			c.name,
-			path,
-			minio.StatObjectOptions{},
-		)
-		if err == nil {
-			files = append(files, FileStatFromObjectInfo(&obs))
+		obs := ObjectFile{
+			ob_conn:   c.client,
+			ob_bucket: c.name,
+			name:      path,
+		}
+		if err := obs.FetchStat(); err == nil {
+			files = append(files, &obs)
 		} else {
-			files = append(files, FileStatForDir(path))
+			files = append(files, ObjectFileEmptyDir(path))
 		}
 		if len(files) == 0 {
 			log.Println("No files, returning error")
@@ -76,7 +74,7 @@ func (c obc) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 			c.name,
 			minio.ListObjectsOptions{Prefix: path + "/"},
 		) {
-			files = append(files, FileStatFromObjectInfo(&obs))
+			files = append(files, ObjectFileFromObjectInfo(&obs))
 		}
 	}
 	return files, nil
@@ -93,56 +91,30 @@ func (c obc) LookupGroupName(_ string) string {
 func (c obc) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
 	log.Println("Fileread:", path, req)
-	obs, err := c.client.GetObject(
-		req.Context(),
-		c.name,
-		path,
-		minio.GetObjectOptions{},
-	)
-	if err != nil {
-		return nil, os.ErrNotExist
+	obs := ObjectFile{
+		ob_conn:   c.client,
+		ob_bucket: c.name,
+		name:      path,
 	}
-	b, err := io.ReadAll(obs)
-	if err != nil {
+	if err := obs.FetchContent(); err == nil {
 		return nil, err
 	}
-	return bytes.NewReader(b), nil
+
+	return &obs, nil
 }
 
 func (o obc) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 	path := strings.TrimPrefix(filepath.Clean(req.Filepath), "/")
 	log.Printf("Filewrite: %#v\n", req)
-	return FileWriteAt{o, path, []byte{}}, nil
-}
-
-type FileWriteAt struct {
-	o    obc
-	path string
-	b    []byte
-}
-
-func (fwa FileWriteAt) WriteAt(p []byte, off int64) (int, error) {
-	grow := int64(len(p)) + off - int64(len(fwa.b))
-	if grow > 0 {
-		fwa.b = append(fwa.b, make([]byte, grow)...)
+	obs := ObjectFile{
+		ob_conn:      o.client,
+		ob_bucket:    o.name,
+		name:         path,
+		ob_direction: "upload",
 	}
-
-	return copy(fwa.b[off:], p), nil
-}
-func (fwa FileWriteAt) Close() error {
-	_, err := fwa.o.client.PutObject(
-		context.Background(),
-		fwa.o.name,
-		fwa.path,
-		bytes.NewReader(fwa.b),
-		int64(len(fwa.b)),
-		minio.PutObjectOptions{},
-	)
-	if err != nil {
-		log.Println("PutObject", fwa.path, err)
-		return err
-	}
-	return nil
+	obs.FetchStat()
+	obs.FetchContent() // ignore errors n/a file etc
+	return &obs, nil
 }
 
 func (c obc) Filecmd(req *sftp.Request) error {

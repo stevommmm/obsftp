@@ -93,7 +93,7 @@ func main() {
 	cliVerbose := flag.Bool("v", false, "Verbose mode.")
 	flag.Parse()
 
-	endpoint := "10.88.0.2:9000"
+	endpoint := "127.0.0.1:9000"
 	accessKeyID := "minioadmin"
 	secretAccessKey := "minioadmin"
 
