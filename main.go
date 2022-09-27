@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/ed25519"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -16,7 +15,7 @@ import (
 )
 
 var config *ssh.ServerConfig
-var client *obc
+var client *RootClient
 
 func clientHandler(nConn net.Conn) {
 	// Before use, a handshake must be performed on the incoming
@@ -69,14 +68,15 @@ func clientHandler(nConn net.Conn) {
 		}(requests)
 
 		serverOptions := []sftp.RequestServerOption{}
-		userClient := client.For(sConn.User())
+		bClient := client.ForBucket(sConn.User())
+		log.Printf("%#v\n", bClient)
 		server := sftp.NewRequestServer(
 			channel,
 			sftp.Handlers{
-				FileGet:  userClient,
-				FilePut:  userClient,
-				FileCmd:  userClient,
-				FileList: userClient,
+				FileGet:  bClient,
+				FilePut:  bClient,
+				FileCmd:  bClient,
+				FileList: bClient,
 			},
 			serverOptions...,
 		)
@@ -105,7 +105,7 @@ func main() {
 		if *cliVerbose {
 			c.TraceOn(os.Stderr)
 		}
-		client = &obc{
+		client = &RootClient{
 			client: c,
 		}
 	} else {
@@ -113,14 +113,14 @@ func main() {
 	}
 
 	config = &ssh.ServerConfig{
+		NoClientAuth: false,
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if !client.IsValidUser(c.User()) {
-				return nil, fmt.Errorf("Invalid user %q", c.User())
-			}
-			return nil, nil
+			err := client.ValidatePassword(c.User(), pass)
+			return nil, err
 		},
 		PublicKeyCallback: func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			return nil, fmt.Errorf("key rejected for %q", c.User())
+			err := client.ValidatePublicKey(c.User(), ssh.MarshalAuthorizedKey(key))
+			return nil, err
 		},
 	}
 

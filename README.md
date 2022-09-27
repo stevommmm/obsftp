@@ -24,6 +24,3 @@ Client:
 ```bash
 sftp -o UserKnownHostsFile=/dev/null -P 2222 127.0.0.1
 ```
-
-
-

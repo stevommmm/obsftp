@@ -174,8 +174,6 @@ func (o *ObjectFile) ReadAt(b []byte, off int64) (int, error) {
 func (o *ObjectFile) WriteAt(p []byte, off int64) (int, error) {
 	o.lock.Lock()
 	defer o.lock.Unlock()
-
-	log.Println(o.Name(), off, o.ob_content)
 	grow := int64(len(p)) + off - o.bSize()
 	if grow > 0 {
 		o.ob_content = append(o.ob_content, make([]byte, grow)...)
@@ -199,8 +197,10 @@ func (o *ObjectFile) Close() error {
 			log.Println("!PutObject", o.Name(), err)
 			return err
 		}
-		log.Printf("PutObject: %#v %d\n", n, o.bSize())
+		if n.Size == 0 {
+			log.Println("!?PutObject", o.Name(), "0 byte upload")
+		}
 	}
-	log.Println("Close", o.ob_direction, o.ob_bucket, o.Name())
+	o.ob_content = make([]byte, 1)
 	return nil
 }
