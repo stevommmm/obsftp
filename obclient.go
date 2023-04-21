@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -18,79 +15,16 @@ import (
 
 var (
 	GenericAuthError = fmt.Errorf("Bad Authentication")
-
-	ObjectAuthorizedKeys = ".authorized_keys"
-	ObjectAuthorizedPass = ".authorized_pass"
 )
 
 func normalizePath(path string) (string, error) {
 	path = strings.TrimPrefix(filepath.Clean(path), "/")
-	if path == ObjectAuthorizedKeys || path == ObjectAuthorizedPass {
-		return "", fs.ErrPermission
-	}
 	return path, nil
 }
 
-type RootClient struct {
-	client *minio.Client
-}
-
 type BucketClient struct {
-	*RootClient
-	name string
-}
-
-func (o *RootClient) hasBucket(user string) bool {
-	ok, err := o.client.BucketExists(context.Background(), user)
-	if ok && err == nil {
-		return true
-	}
-	return false
-}
-
-func (o *RootClient) compareContent(user, heystack string, needle []byte) bool {
-	f, err := o.client.GetObject(
-		context.Background(),
-		user,
-		heystack,
-		minio.GetObjectOptions{},
-	)
-	if err != nil {
-		return false
-	}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if bytes.Equal(line, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func (o *RootClient) ValidatePassword(user string, pass []byte) error {
-	if !o.hasBucket(user) {
-		return GenericAuthError
-	}
-	if !o.compareContent(user, ".authorized_pass", pass) {
-		return GenericAuthError
-	}
-	return nil
-}
-
-func (o *RootClient) ValidatePublicKey(user string, authorized_key []byte) error {
-	authorized_key = bytes.TrimSpace(authorized_key)
-	if !o.hasBucket(user) {
-		return GenericAuthError
-	}
-	if !o.compareContent(user, ".authorized_keys", authorized_key) {
-		return GenericAuthError
-	}
-	return nil
-}
-
-func (o *RootClient) ForBucket(name string) *BucketClient {
-	return &BucketClient{o, name}
+	client *minio.Client
+	name   string
 }
 
 type FileListAt []os.FileInfo
@@ -137,10 +71,6 @@ func (c *BucketClient) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 			c.name,
 			minio.ListObjectsOptions{Prefix: path + "/"},
 		) {
-			// Drop our config files out of directory listings
-			if obs.Key == ObjectAuthorizedKeys || obs.Key == ObjectAuthorizedPass {
-				continue
-			}
 			files = append(files, ObjectFileFromObjectInfo(&obs))
 		}
 	}

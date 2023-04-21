@@ -14,8 +14,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var config *ssh.ServerConfig
-var client *RootClient
+var (
+	cliVerbose *bool
+	config     *ssh.ServerConfig
+	endpoint   = "127.0.0.1:9000"
+	bucket     = "sftp"
+)
 
 func clientHandler(nConn net.Conn) {
 	// Before use, a handshake must be performed on the incoming
@@ -26,6 +30,27 @@ func clientHandler(nConn net.Conn) {
 		return
 	}
 	log.Printf("%q SSH server established\n", nConn.RemoteAddr())
+
+	// Initialize minio client object.
+	var client *BucketClient
+	if c, err := minio.New(endpoint, &minio.Options{
+		Creds: credentials.NewStaticV4(
+			sConn.Permissions.Extensions["OBJ_KEY"],
+			sConn.Permissions.Extensions["OBJ_SECRET"],
+			""),
+		Secure: false,
+	}); err == nil {
+		if *cliVerbose {
+			c.TraceOn(os.Stderr)
+		}
+		client = &BucketClient{
+			client: c,
+			name:   bucket,
+		}
+	} else {
+		log.Println(err)
+		return
+	}
 
 	// The incoming Request channel must be serviced.
 	go ssh.DiscardRequests(reqs)
@@ -68,15 +93,14 @@ func clientHandler(nConn net.Conn) {
 		}(requests)
 
 		serverOptions := []sftp.RequestServerOption{}
-		bClient := client.ForBucket(sConn.User())
-		log.Printf("%#v\n", bClient)
+		log.Printf("%#v\n", client)
 		server := sftp.NewRequestServer(
 			channel,
 			sftp.Handlers{
-				FileGet:  bClient,
-				FilePut:  bClient,
-				FileCmd:  bClient,
-				FileList: bClient,
+				FileGet:  client,
+				FilePut:  client,
+				FileCmd:  client,
+				FileList: client,
 			},
 			serverOptions...,
 		)
@@ -90,37 +114,14 @@ func clientHandler(nConn net.Conn) {
 }
 
 func main() {
-	cliVerbose := flag.Bool("v", false, "Verbose mode.")
+	cliVerbose = flag.Bool("v", false, "Verbose mode.")
 	flag.Parse()
-
-	endpoint := "127.0.0.1:9000"
-	accessKeyID := "minioadmin"
-	secretAccessKey := "minioadmin"
-
-	// Initialize minio client object.
-	if c, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
-		Secure: false,
-	}); err == nil {
-		if *cliVerbose {
-			c.TraceOn(os.Stderr)
-		}
-		client = &RootClient{
-			client: c,
-		}
-	} else {
-		log.Fatal(err)
-	}
 
 	config = &ssh.ServerConfig{
 		NoClientAuth: false,
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			err := client.ValidatePassword(c.User(), pass)
-			return nil, err
-		},
-		PublicKeyCallback: func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			err := client.ValidatePublicKey(c.User(), ssh.MarshalAuthorizedKey(key))
-			return nil, err
+			// Used later on in S3 connections
+			return &ssh.Permissions{Extensions: map[string]string{"OBJ_KEY": c.User(), "OBJ_SECRET": string(pass)}}, nil
 		},
 	}
 
