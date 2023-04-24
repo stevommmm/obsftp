@@ -17,14 +17,14 @@ var (
 	GenericAuthError = fmt.Errorf("Bad Authentication")
 )
 
-func normalizePath(path string) (string, error) {
+func normalizePath(path string) (string, string, error) {
 	path = strings.TrimPrefix(filepath.Clean(path), "/")
-	return path, nil
+	bucket, path, _ := strings.Cut(path, "/")
+	return bucket, path, nil
 }
 
 type BucketClient struct {
 	client *minio.Client
-	name   string
 }
 
 type FileListAt []os.FileInfo
@@ -42,18 +42,36 @@ func (f FileListAt) ListAt(ls []os.FileInfo, offset int64) (int, error) {
 	return n, nil
 }
 
+func (c *BucketClient) BucketList(req *sftp.Request) (sftp.ListerAt, error) {
+	files := FileListAt{}
+	log.Printf("\nBucketList: %q\n", req.Method)
+	switch req.Method {
+	case "List":
+		b, err := c.client.ListBuckets(
+			context.Background(),
+		)
+		if err != nil {
+			return files, err
+		}
+		for _, obs := range b {
+			files = append(files, ObjectFileFromBucketInfo(&obs))
+		}
+	}
+	return files, nil
+}
+
 func (c *BucketClient) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 	files := FileListAt{}
-	path, err := normalizePath(req.Filepath)
+	bucket, path, err := normalizePath(req.Filepath)
 	if err != nil {
 		return files, err
 	}
-	log.Printf("\nFilelist %q: %q %q\n", c.name, req.Method, path)
+	log.Printf("\nFilelist %q: %q %q\n", bucket, req.Method, path)
 	switch req.Method {
 	case "Stat":
 		obs := ObjectFile{
 			ob_conn:   c.client,
-			ob_bucket: c.name,
+			ob_bucket: bucket,
 			name:      path,
 		}
 		if err := obs.FetchStat(); err == nil {
@@ -66,9 +84,12 @@ func (c *BucketClient) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 			return files, os.ErrNotExist
 		}
 	case "List":
+		if bucket == "" {
+			return c.BucketList(req)
+		}
 		for obs := range c.client.ListObjects(
 			context.Background(),
-			c.name,
+			bucket,
 			minio.ListObjectsOptions{Prefix: path + "/"},
 		) {
 			files = append(files, ObjectFileFromObjectInfo(&obs))
@@ -79,21 +100,21 @@ func (c *BucketClient) Filelist(req *sftp.Request) (sftp.ListerAt, error) {
 
 // Functions to send back nice names for owners
 func (c *BucketClient) LookupUserName(_ string) string {
-	return c.name
+	return "sftp"
 }
 func (c *BucketClient) LookupGroupName(_ string) string {
-	return c.name
+	return "sftp"
 }
 
 func (c *BucketClient) Fileread(req *sftp.Request) (io.ReaderAt, error) {
-	path, err := normalizePath(req.Filepath)
+	bucket, path, err := normalizePath(req.Filepath)
 	if err != nil {
 		return nil, err
 	}
 	log.Println("Fileread:", path, req)
 	obs := ObjectFile{
 		ob_conn:   c.client,
-		ob_bucket: c.name,
+		ob_bucket: bucket,
 		name:      path,
 	}
 	if err := obs.FetchContent(); err == nil {
@@ -104,14 +125,14 @@ func (c *BucketClient) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 }
 
 func (o *BucketClient) Filewrite(req *sftp.Request) (io.WriterAt, error) {
-	path, err := normalizePath(req.Filepath)
+	bucket, path, err := normalizePath(req.Filepath)
 	if err != nil {
 		return nil, err
 	}
 	log.Printf("Filewrite: %#v\n", req)
 	obs := ObjectFile{
 		ob_conn:      o.client,
-		ob_bucket:    o.name,
+		ob_bucket:    bucket,
 		name:         path,
 		ob_direction: "upload",
 	}
@@ -121,7 +142,7 @@ func (o *BucketClient) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 }
 
 func (c *BucketClient) Filecmd(req *sftp.Request) error {
-	path, err := normalizePath(req.Filepath)
+	bucket, path, err := normalizePath(req.Filepath)
 	if err != nil {
 		return err
 	}
@@ -133,10 +154,10 @@ func (c *BucketClient) Filecmd(req *sftp.Request) error {
 	case "Rmdir":
 		lobs := c.client.ListObjects(
 			context.Background(),
-			c.name,
+			bucket,
 			minio.ListObjectsOptions{Prefix: path + "/", Recursive: true},
 		)
-		for _ = range c.client.RemoveObjects(context.Background(), c.name, lobs, minio.RemoveObjectsOptions{}) {
+		for _ = range c.client.RemoveObjects(context.Background(), bucket, lobs, minio.RemoveObjectsOptions{}) {
 			return os.ErrInvalid
 		}
 		return nil
@@ -145,7 +166,7 @@ func (c *BucketClient) Filecmd(req *sftp.Request) error {
 	case "Link", "Symlink":
 		return os.ErrPermission
 	case "Remove":
-		return c.client.RemoveObject(context.Background(), c.name, path, minio.RemoveObjectOptions{})
+		return c.client.RemoveObject(context.Background(), bucket, path, minio.RemoveObjectOptions{})
 	}
 
 	return nil

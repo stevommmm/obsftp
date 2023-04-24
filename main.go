@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -15,10 +17,10 @@ import (
 )
 
 var (
-	cliVerbose *bool
-	config     *ssh.ServerConfig
-	endpoint   = "127.0.0.1:9000"
-	bucket     = "sftp"
+	cliBind     string
+	cliVerbose  bool
+	cliEndpoint string
+	config      *ssh.ServerConfig
 )
 
 func clientHandler(nConn net.Conn) {
@@ -27,28 +29,39 @@ func clientHandler(nConn net.Conn) {
 	sConn, chans, reqs, err := ssh.NewServerConn(nConn, config)
 	if err != nil {
 		log.Printf("%q failed to handshake\n", nConn.RemoteAddr(), err)
+		nConn.Close()
 		return
 	}
 	log.Printf("%q SSH server established\n", nConn.RemoteAddr())
 
 	// Initialize minio client object.
 	var client *BucketClient
-	if c, err := minio.New(endpoint, &minio.Options{
+	if c, err := minio.New(cliEndpoint, &minio.Options{
 		Creds: credentials.NewStaticV4(
 			sConn.Permissions.Extensions["OBJ_KEY"],
 			sConn.Permissions.Extensions["OBJ_SECRET"],
 			""),
 		Secure: false,
 	}); err == nil {
-		if *cliVerbose {
+		if cliVerbose {
 			c.TraceOn(os.Stderr)
 		}
+
+		// Handles testing the credentials above are valid
+		if authbuckets, err := c.ListBuckets(context.Background()); err != nil {
+			sConn.Close()
+			return
+		} else if len(authbuckets) == 0 {
+			sConn.Close()
+			return
+		}
+
 		client = &BucketClient{
 			client: c,
-			name:   bucket,
 		}
 	} else {
 		log.Println(err)
+		sConn.Close()
 		return
 	}
 
@@ -114,12 +127,17 @@ func clientHandler(nConn net.Conn) {
 }
 
 func main() {
-	cliVerbose = flag.Bool("v", false, "Verbose mode.")
+	flag.StringVar(&cliBind, "bind", "0.0.0.0:2222", "SFTP server listen address")
+	flag.BoolVar(&cliVerbose, "v", false, "Verbose mode")
+	flag.StringVar(&cliEndpoint, "endpoint", "127.0.0.1:9000", "Remote Object store location")
 	flag.Parse()
 
 	config = &ssh.ServerConfig{
 		NoClientAuth: false,
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if len(c.User()) < 16 || len(pass) < 16 {
+				return nil, fmt.Errorf("Invalid login.")
+			}
 			// Used later on in S3 connections
 			return &ssh.Permissions{Extensions: map[string]string{"OBJ_KEY": c.User(), "OBJ_SECRET": string(pass)}}, nil
 		},
@@ -138,7 +156,7 @@ func main() {
 
 	// Once a ServerConfig has been configured, connections can be
 	// accepted.
-	listener, err := net.Listen("tcp4", "0.0.0.0:2222")
+	listener, err := net.Listen("tcp4", cliBind)
 	if err != nil {
 		log.Fatal("failed to listen for connection", err)
 	}

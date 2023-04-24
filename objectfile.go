@@ -31,6 +31,22 @@ type ObjectFile struct {
 	ob_direction string
 }
 
+func ObjectFileFromBucketInfo(stat *minio.BucketInfo) *ObjectFile {
+	mode := fs.FileMode(0750)
+	mode = mode | fs.ModeDir
+	// Folders dont really have a time, so they show as negative
+	mod := stat.CreationDate
+
+	// Forge 'folders' by trimming out the search prefix
+	return &ObjectFile{
+		name:    filepath.Base(stat.Name),
+		size:    0,
+		mode:    mode,
+		modTime: mod,
+		isDir:   true,
+	}
+}
+
 func ObjectFileFromObjectInfo(stat *minio.ObjectInfo) *ObjectFile {
 	mode := fs.FileMode(0750)
 	if stat.ETag == "" {
