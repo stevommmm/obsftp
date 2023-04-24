@@ -17,10 +17,11 @@ import (
 )
 
 var (
-	cliBind     string
-	cliVerbose  bool
-	cliEndpoint string
-	config      *ssh.ServerConfig
+	cliBind           string
+	cliVerbose        bool
+	cliEndpoint       string
+	ckiEndpointSecure bool
+	config            *ssh.ServerConfig
 )
 
 func clientHandler(nConn net.Conn) {
@@ -41,7 +42,7 @@ func clientHandler(nConn net.Conn) {
 			sConn.Permissions.Extensions["OBJ_KEY"],
 			sConn.Permissions.Extensions["OBJ_SECRET"],
 			""),
-		Secure: false,
+		Secure: ckiEndpointSecure,
 	}); err == nil {
 		if cliVerbose {
 			c.TraceOn(os.Stderr)
@@ -129,7 +130,8 @@ func clientHandler(nConn net.Conn) {
 func main() {
 	flag.StringVar(&cliBind, "bind", "0.0.0.0:2222", "SFTP server listen address")
 	flag.BoolVar(&cliVerbose, "v", false, "Verbose mode")
-	flag.StringVar(&cliEndpoint, "endpoint", "127.0.0.1:9000", "Remote Object store location")
+	flag.StringVar(&cliEndpoint, "endpoint", "127.0.0.1:9000", "Remote Object Store location")
+	flag.BoolVar(&ckiEndpointSecure, "secure-endpoint", false, "Remote Object Store uses SSL")
 	flag.Parse()
 
 	config = &ssh.ServerConfig{
