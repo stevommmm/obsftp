@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -22,7 +23,19 @@ var (
 	cliEndpoint       string
 	ckiEndpointSecure bool
 	config            *ssh.ServerConfig
+	hostkeys          HostKeys
 )
+
+type HostKeys []string
+
+func (v *HostKeys) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *HostKeys) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
 
 func clientHandler(nConn net.Conn) {
 	// Before use, a handshake must be performed on the incoming
@@ -127,11 +140,44 @@ func clientHandler(nConn net.Conn) {
 	}
 }
 
+func ParseOrGenerateHostKey(config *ssh.ServerConfig) {
+	found := false
+	// Iterate host keys via cli and add any that load
+	for _, hk := range hostkeys {
+		if rpem, err := os.ReadFile(hk); err == nil {
+			if s, err := ssh.ParsePrivateKey(rpem); err == nil {
+				config.AddHostKey(s)
+				log.Printf("Loaded key from %q\n", hk)
+				found = true
+			} else {
+				log.Println(err)
+			}
+		} else {
+			log.Println(err)
+		}
+	}
+
+	// None of the provided paths worked out, generate one
+	if !found {
+		_, private, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			log.Fatal("Failed to generate keys", err)
+		}
+
+		signer, err := ssh.NewSignerFromKey(private)
+		if err != nil {
+			log.Fatal("signer from key", err)
+		}
+		config.AddHostKey(signer)
+	}
+}
+
 func main() {
 	flag.StringVar(&cliBind, "bind", "0.0.0.0:2222", "SFTP server listen address")
 	flag.BoolVar(&cliVerbose, "v", false, "Verbose mode")
 	flag.StringVar(&cliEndpoint, "endpoint", "127.0.0.1:9000", "Remote Object Store location")
 	flag.BoolVar(&ckiEndpointSecure, "secure-endpoint", false, "Remote Object Store uses SSL")
+	flag.Var(&hostkeys, "hostkey", "Path to a PEM formatted host key")
 	flag.Parse()
 
 	config = &ssh.ServerConfig{
@@ -145,16 +191,7 @@ func main() {
 		},
 	}
 
-	_, private, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		log.Fatal("Failed to generate keys", err)
-	}
-
-	signer, err := ssh.NewSignerFromKey(private)
-	if err != nil {
-		log.Fatal("signer from key", err)
-	}
-	config.AddHostKey(signer)
+	ParseOrGenerateHostKey(config)
 
 	// Once a ServerConfig has been configured, connections can be
 	// accepted.
